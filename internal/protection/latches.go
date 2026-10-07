@@ -33,19 +33,23 @@ func (s *LatchStore) Apply(candidate Latches) (Latches, error) {
 	}
 	candidate.UpdatedAt = time.Now().UTC()
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	current := s.latches[candidate.StationID]
 	if candidate.Revision < current.Revision {
-		s.mu.Unlock()
 		return current, fmt.Errorf("stale latch revision %d", candidate.Revision)
 	}
-	s.latches[candidate.StationID] = candidate
-	s.mu.Unlock()
-	_, err := s.snapshots.MergeProtection(candidate.StationID, store.ProtectionSnapshot{
+	// Persist before committing to memory: a failed write must not change
+	// the observable protection state or consume the revision, so the
+	// caller can retry with the same revision.
+	if _, err := s.snapshots.MergeProtection(candidate.StationID, store.ProtectionSnapshot{
 		Revision: candidate.Revision, HighReturn: candidate.HighReturn,
 		FreezeRisk: candidate.FreezeRisk, PressureTrip: candidate.PressureTrip,
 		UpdatedAt: candidate.UpdatedAt,
-	})
-	return candidate, err
+	}); err != nil {
+		return current, fmt.Errorf("persist latch revision %d: %w", candidate.Revision, err)
+	}
+	s.latches[candidate.StationID] = candidate
+	return candidate, nil
 }
 
 func (s *LatchStore) Get(stationID string) Latches {

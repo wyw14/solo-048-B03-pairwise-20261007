@@ -77,10 +77,11 @@ func (s *StationSnapshotStore) MergeProtection(stationID string, candidate Prote
 			*all = make(map[string]StationSnapshot)
 		}
 		current := (*all)[stationID]
-		current.StationID = stationID
-		if candidate.Revision >= current.Protection.Revision {
-			current.Protection = candidate
+		if candidate.Revision < current.Protection.Revision {
+			return fmt.Errorf("stale protection revision %d", candidate.Revision)
 		}
+		current.StationID = stationID
+		current.Protection = candidate
 		current.UpdatedAt = time.Now().UTC()
 		(*all)[stationID] = current
 		result = current
