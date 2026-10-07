@@ -1,11 +1,16 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"time"
 )
+
+// ErrProtectionConflict is returned when a protection revision has already
+// been superseded by a newer committed one.
+var ErrProtectionConflict = errors.New("protection revision conflict")
 
 type ProtectionSnapshot struct {
 	Revision     uint64    `json:"revision"`
@@ -78,7 +83,16 @@ func (s *StationSnapshotStore) MergeProtection(stationID string, candidate Prote
 		}
 		current := (*all)[stationID]
 		current.StationID = stationID
-		if candidate.Revision >= current.Protection.Revision {
+		switch {
+		case candidate.Revision < current.Protection.Revision:
+			// A newer revision has already been committed; refusing keeps the
+			// persisted history from moving backwards.
+			return fmt.Errorf("%w: committed %d, candidate %d",
+				ErrProtectionConflict, current.Protection.Revision, candidate.Revision)
+		case candidate.Revision == current.Protection.Revision:
+			// Replay of the same revision is an idempotent no-op so callers
+			// can retry with the same revision after an uncertain outcome.
+		default:
 			current.Protection = candidate
 		}
 		current.UpdatedAt = time.Now().UTC()

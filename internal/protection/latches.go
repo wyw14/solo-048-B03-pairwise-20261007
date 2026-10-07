@@ -32,20 +32,36 @@ func (s *LatchStore) Apply(candidate Latches) (Latches, error) {
 		return Latches{}, fmt.Errorf("latch identity and revision are required")
 	}
 	candidate.UpdatedAt = time.Now().UTC()
+
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	current := s.latches[candidate.StationID]
 	if candidate.Revision < current.Revision {
-		s.mu.Unlock()
 		return current, fmt.Errorf("stale latch revision %d", candidate.Revision)
 	}
-	s.latches[candidate.StationID] = candidate
-	s.mu.Unlock()
-	_, err := s.snapshots.MergeProtection(candidate.StationID, store.ProtectionSnapshot{
+
+	// Persist first and only commit into memory once the snapshot write has
+	// succeeded. The lock stays held for the whole commit, so a failed write
+	// leaves both Get and any retry observing the previous protection state;
+	// retrying the same revision is an idempotent replay in the snapshot store.
+	merged, err := s.snapshots.MergeProtection(candidate.StationID, store.ProtectionSnapshot{
 		Revision: candidate.Revision, HighReturn: candidate.HighReturn,
 		FreezeRisk: candidate.FreezeRisk, PressureTrip: candidate.PressureTrip,
 		UpdatedAt: candidate.UpdatedAt,
 	})
-	return candidate, err
+	if err != nil {
+		return current, err
+	}
+	committed := Latches{
+		StationID: candidate.StationID, Revision: merged.Protection.Revision,
+		HighReturn: merged.Protection.HighReturn, FreezeRisk: merged.Protection.FreezeRisk,
+		PressureTrip: merged.Protection.PressureTrip, UpdatedAt: merged.Protection.UpdatedAt,
+	}
+	if committed.Revision >= s.latches[candidate.StationID].Revision {
+		s.latches[candidate.StationID] = committed
+	}
+	return committed, nil
 }
 
 func (s *LatchStore) Get(stationID string) Latches {
